@@ -1,9 +1,7 @@
 pub trait Pool<T>
 {
     fn new(capacity: usize) -> Self;
-
     fn capacity(&self) -> usize;
-
     fn insert(&mut self, value: T) -> PoolKey;
     fn get(&self, key: &PoolKey) -> Option<&T>;
     fn get_mut(&mut self, key: &PoolKey) -> Option<&mut T>;
@@ -12,20 +10,20 @@ pub trait Pool<T>
 }
 
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PoolKey
 {
     index: usize,
     generation: usize,
 }
 
-
-#[derive(Debug, Default)]
-pub struct PoolItem<T>
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+struct PoolItem<T>
 {
     generation: usize,
     data: Option<T>,
 }
+
 
 impl<T> PoolItem<T>
 {
@@ -186,10 +184,44 @@ mod pool_item
 
 // ===-===-===-===-===-===-===-===-===-===-===-===-=== //
 
+/// The default ObjectPool implementation.
+///
+/// Allocation of specified capacity happens completely upfront, and the pool cannot be resized.
+///
+/// Items are eagerly dropped when [`deleted`], so destructors run asap.
+///
+/// See [`Pool`] implementation for more information.
+///
+/// [`deleted`]: struct.ObjectPool.delete
+/// [`Pool`]: trait.Pool.html
+///
+/// ```rust
+/// # use std::error::Error;
+/// #
+/// # fn main() -> Result<(), Box<dyn Error>> {
+/// use spool::{ ObjectPool, Pool };
+///
+/// //Pool allocates _once_ upfront, with given capacity.
+/// let mut pool = ObjectPool::new(3);
+///
+/// let key1 = pool.insert(1);
+/// let key2 = pool.insert(2);
+/// let key3 = pool.insert(3);
+///
+/// //Over capacity! This panics!
+/// //let key4 = pool.insert(404);
+///
+/// pool.delete(&key2);
+///
+/// //All is well.
+/// let key4 = pool.insert(404);
+/// #
+/// #     Ok(())
+/// # }
+/// ```
 
-
-#[derive(Debug)]
-pub struct VectorBackedPool<T>
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ObjectPool<T>
 {
     count: usize,
     next: usize,
@@ -197,8 +229,18 @@ pub struct VectorBackedPool<T>
     data: Vec<PoolItem<T>>,
 }
 
-impl<T> Pool<T> for VectorBackedPool<T>
+impl<T> Pool<T> for ObjectPool<T>
 {
+    /// Returns a new, empty pool. Preallocated with specified capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use spool::{ ObjectPool, Pool };
+    ///
+    /// let pool: ObjectPool<i32> = ObjectPool::new(10);
+    /// assert_eq!(pool.capacity(), 10);
+    /// ```
     fn new(capacity: usize) -> Self
     {
         Self {
@@ -215,10 +257,36 @@ impl<T> Pool<T> for VectorBackedPool<T>
 
     // ====-====-====-====-====-==== //
 
+    /// Returns the maximum capacity of the pool.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use spool::{ ObjectPool, Pool };
+    ///
+    /// let pool: ObjectPool<i32> = ObjectPool::new(10);
+    /// assert_eq!(pool.capacity(), 10);
+    /// ```
     fn capacity(&self) -> usize { self.data.capacity() }
 
     // ====-====-====-====-====-==== //
 
+    /// Returns a [`PoolKey`] corresponding to the inserted item.
+    ///
+    /// [`PoolKey`]: struct.PoolKey.html
+    ///
+    /// # Panics
+    ///
+    /// This function panics if pool is full.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use spool::{ ObjectPool, Pool };
+    ///
+    /// let mut pool = ObjectPool::new(10);
+    /// let key = pool.insert("Howdy!");
+    /// ```
     fn insert(&mut self, value: T) -> PoolKey
     {
         let index =
@@ -247,6 +315,25 @@ impl<T> Pool<T> for VectorBackedPool<T>
         };
     }
 
+    /// Retrieves an Option<&T> corresponding to the [`PoolKey`] referenced.
+    ///
+    /// [`PoolKey`]: struct.PoolKey.html
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use spool::{ ObjectPool, Pool };
+    ///
+    /// let mut pool = ObjectPool::new(10);
+    ///
+    /// let key1 = pool.insert("I am going to be removed!");
+    /// let key2 = pool.insert("I am going to remain!");
+    ///
+    /// pool.delete(&key1);
+    ///
+    /// assert!(pool.get(&key1).is_none());
+    /// assert!(pool.get(&key2).is_some());
+    /// ```
     fn get(&self, key: &PoolKey) -> Option<&T>
     {
         if key.index >= self.data.capacity() { return None; }
@@ -259,6 +346,25 @@ impl<T> Pool<T> for VectorBackedPool<T>
         }
     }
 
+    /// Retrieves an Option<&T> corresponding to the [`PoolKey`] referenced.
+    ///
+    /// [`PoolKey`]: struct.PoolKey.html
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use spool::{ ObjectPool, Pool };
+    ///
+    /// let mut pool = ObjectPool::new(10);
+    ///
+    /// let key1 = pool.insert("I am going to be removed!");
+    /// let key2 = pool.insert("I am going to remain!");
+    ///
+    /// pool.delete(&key1);
+    ///
+    /// assert!(pool.get_mut(&key1).is_none());
+    /// assert!(pool.get_mut(&key2).is_some());
+    /// ```
     fn get_mut(&mut self, key: &PoolKey) -> Option<&mut T>
     {
         if key.index >= self.data.capacity() { return None; }
@@ -271,6 +377,24 @@ impl<T> Pool<T> for VectorBackedPool<T>
         }
     }
 
+    /// Extracts an Option<T> corresponding to the [`PoolKey`] referenced.
+    /// When an entry is been [`taken`] it is removed from the pool.
+    ///
+    /// [`PoolKey`]: struct.PoolKey.html
+    /// [`taken`]: #method.take
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use spool::{ ObjectPool, Pool };
+    ///
+    /// let mut pool = ObjectPool::new(10);
+    ///
+    /// let key = pool.insert("Take me!");
+    ///
+    /// assert!(pool.take(&key).is_some());
+    /// assert!(pool.get(&key).is_none());
+    /// ```
     fn take(&mut self, key: &PoolKey) -> Option<T>
     {
         if key.index >= self.data.capacity() { return None; }
@@ -286,6 +410,26 @@ impl<T> Pool<T> for VectorBackedPool<T>
         }
     }
 
+    /// Deletes an entry corresponding to the [`PoolKey`] referenced.
+    /// When an entry is been [`deleted`] it is removed, however it will not be returned.
+    ///
+    /// [`PoolKey`]: struct.PoolKey.html
+    /// [`take`]: #method.take
+    /// [`deleted`]: #method.delete
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use spool::{ ObjectPool, Pool };
+    ///
+    /// let mut pool = ObjectPool::new(10);
+    ///
+    /// let key = pool.insert("Delete me!");
+    ///
+    /// pool.delete(&key);
+    ///
+    /// assert!(pool.get(&key).is_none());
+    /// ```
     fn delete(&mut self, key: &PoolKey)
     {
         if key.index >= self.data.capacity() { return; }
@@ -302,6 +446,7 @@ impl<T> Pool<T> for VectorBackedPool<T>
     }
 }
 
+
 #[cfg(test)]
 mod vector_backed_pool
 {
@@ -309,13 +454,13 @@ mod vector_backed_pool
     {
         use super::super::{
             Pool,
-            VectorBackedPool,
+            ObjectPool,
         };
 
         #[test]
         fn correctly_initializes_a_pool()
         {
-            let pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let pool: ObjectPool<i32> = ObjectPool::new(10);
 
             assert_eq!(pool.capacity(), 10);
             assert_eq!(pool.count, 0);
@@ -329,13 +474,13 @@ mod vector_backed_pool
     {
         use super::super::{
             Pool,
-            VectorBackedPool,
+            ObjectPool,
         };
 
         #[test]
         fn correctly_updates_pool_state()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             let key = pool.insert(100);
 
             assert!(pool.data[key.index].data.is_some());
@@ -362,7 +507,7 @@ mod vector_backed_pool
         #[test]
         fn returns_valid_key_pointing_to_expected_data()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             let key = pool.insert(100);
 
             assert_eq!(key.index, 0, "Expected index of first inserted element to be 0.");
@@ -376,7 +521,7 @@ mod vector_backed_pool
         #[should_panic]
         fn should_panic_if_full()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             for i in 0..10 { pool.insert(i); }
 
             pool.insert(100);
@@ -388,13 +533,13 @@ mod vector_backed_pool
         use super::super::{
             Pool,
             PoolKey,
-            VectorBackedPool,
+            ObjectPool,
         };
 
         #[test]
         fn returns_some_reference_to_entry_specified()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             let key1 = pool.insert(100);
             let key2 = pool.insert(200);
             let key3 = pool.insert(300);
@@ -417,7 +562,7 @@ mod vector_backed_pool
         #[test]
         fn returns_none_if_key_has_invalid_index()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             pool.insert(100);
 
             let key_at_cap = PoolKey { index: 10, generation: 0 };
@@ -432,7 +577,7 @@ mod vector_backed_pool
         #[test]
         fn returns_none_if_generation_mismatch()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             let key = pool.insert(100);
 
             pool.data[key.index].generation = 42;
@@ -444,7 +589,7 @@ mod vector_backed_pool
         #[test]
         fn returns_none_if_data_is_none()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             let key = pool.insert(100);
 
             pool.data[key.index].data = None;
@@ -459,13 +604,13 @@ mod vector_backed_pool
         use super::super::{
             Pool,
             PoolKey,
-            VectorBackedPool,
+            ObjectPool,
         };
 
         #[test]
         fn returns_some_reference_to_entry_specified()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             let key1 = pool.insert(100);
             let key2 = pool.insert(200);
             let key3 = pool.insert(300);
@@ -487,7 +632,7 @@ mod vector_backed_pool
         #[test]
         fn returns_none_if_key_has_invalid_index()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             pool.insert(100);
 
             let key_at_cap = PoolKey { index: 10, generation: 0 };
@@ -502,7 +647,7 @@ mod vector_backed_pool
         #[test]
         fn returns_none_if_generation_mismatch()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             let key = pool.insert(100);
 
             pool.data[key.index].generation = 42;
@@ -514,7 +659,7 @@ mod vector_backed_pool
         #[test]
         fn returns_none_if_data_is_none()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             let key = pool.insert(100);
 
             pool.data[key.index].data = None;
@@ -529,13 +674,13 @@ mod vector_backed_pool
         use super::super::{
             Pool,
             PoolKey,
-            VectorBackedPool,
+            ObjectPool,
         };
 
         #[test]
         fn replaces_item_with_none_and_pushes_index_to_free()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             let key = pool.insert(100);
 
             let old_count = pool.count;
@@ -559,7 +704,7 @@ mod vector_backed_pool
         #[test]
         fn returns_none_if_key_has_invalid_index()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             let key = pool.insert(100);
 
             let old_count = pool.count;
@@ -588,7 +733,7 @@ mod vector_backed_pool
         #[test]
         fn returns_none_if_generation_mismatch()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             let key = pool.insert(100);
 
             let old_count = pool.count;
@@ -608,7 +753,7 @@ mod vector_backed_pool
         #[test]
         fn returns_none_if_data_is_none()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             let key = pool.insert(100);
 
             let old_count = pool.count;
@@ -629,13 +774,13 @@ mod vector_backed_pool
         use super::super::{
             Pool,
             PoolKey,
-            VectorBackedPool,
+            ObjectPool,
         };
 
         #[test]
         fn replaces_item_with_none_and_pushes_index_to_free()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             let key = pool.insert(100);
 
             let old_count = pool.count;
@@ -656,7 +801,7 @@ mod vector_backed_pool
         #[test]
         fn does_nothing_if_key_has_invalid_index()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             let key = pool.insert(100);
 
             let old_count = pool.count;
@@ -683,7 +828,7 @@ mod vector_backed_pool
         #[test]
         fn returns_none_if_generation_mismatch()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             let key = pool.insert(100);
 
             let old_count = pool.count;
@@ -702,7 +847,7 @@ mod vector_backed_pool
         #[test]
         fn returns_none_if_data_is_none()
         {
-            let mut pool: VectorBackedPool<i32> = VectorBackedPool::new(10);
+            let mut pool: ObjectPool<i32> = ObjectPool::new(10);
             let key = pool.insert(100);
 
             let old_count = pool.count;
