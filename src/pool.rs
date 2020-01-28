@@ -49,13 +49,13 @@ impl<T> PoolItem<T>
         return self.generation;
     }
 
-    fn as_ref(&self) -> Option<&T>
+    fn get(&self) -> Option<&T>
     {
         if let Some(ref data) = self.data { Some(data) }
         else                              { None }
     }
 
-    fn as_mut_ref(&mut self) -> Option<&mut T>
+    fn get_mut(&mut self) -> Option<&mut T>
     {
         if let Some(ref mut data) = self.data { Some(data) }
         else                                  { None }
@@ -124,7 +124,7 @@ mod pool_item
         }
     }
 
-    mod as_ref
+    mod get
     {
         use super::super::PoolItem;
 
@@ -132,7 +132,7 @@ mod pool_item
         fn returns_none_if_empty()
         {
             let val: PoolItem<i32> = Default::default();
-            assert!(val.as_ref().is_none());
+            assert!(val.get().is_none());
         }
 
         #[test]
@@ -140,11 +140,11 @@ mod pool_item
         {
             let mut val: PoolItem<i32> = Default::default();
             val.set(100);
-            assert!(val.as_ref().is_some());
+            assert!(val.get().is_some());
         }
     }
 
-    mod as_mut_ref
+    mod get_mut
     {
         use super::super::PoolItem;
 
@@ -152,7 +152,7 @@ mod pool_item
         fn returns_none_if_empty()
         {
             let mut val: PoolItem<i32> = Default::default();
-            assert!(val.as_mut_ref().is_none());
+            assert!(val.get_mut().is_none());
         }
 
         #[test]
@@ -160,7 +160,7 @@ mod pool_item
         {
             let mut val: PoolItem<i32> = Default::default();
             val.set(100);
-            assert!(val.as_mut_ref().is_some());
+            assert!(val.get_mut().is_some());
         }
     }
 
@@ -255,7 +255,7 @@ impl<T> Pool<T> for VectorBackedPool<T>
             let entry = &self.data[key.index];
 
             if entry.generation != key.generation || entry.is_empty() { return None; }
-            else { return entry.as_ref(); }
+            else { return entry.get(); }
         }
     }
 
@@ -267,7 +267,7 @@ impl<T> Pool<T> for VectorBackedPool<T>
             let entry = &mut self.data[key.index];
 
             if entry.generation != key.generation || entry.is_empty() { return None; }
-            else { return entry.as_mut_ref(); }
+            else { return entry.get_mut(); }
         }
     }
 
