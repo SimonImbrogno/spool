@@ -6,5 +6,6 @@ authors = ["Simon Imbrogno <turnforever.github@gmail.com>"]
 categories = ["data-structures", "game-development", "memory-management", "algorithms"]
 keywords = ["object", "pool", "simple", "fast", "allocator"]
 license = "Apache-2.0 OR MIT"
+description = "Simple object pool for upfront allocation!"
 
 [dependencies]
