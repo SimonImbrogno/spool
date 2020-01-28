@@ -306,7 +306,9 @@ impl<T> Pool<T> for ObjectPool<T>
                 panic!();
             };
 
-        let generation = self.data[index].set(value);
+        let generation = unsafe {
+            self.data.get_unchecked_mut(index).set(value)
+        };
         self.count += 1;
 
         return PoolKey {
@@ -339,7 +341,9 @@ impl<T> Pool<T> for ObjectPool<T>
         if key.index >= self.data.capacity() { return None; }
         else
         {
-            let entry = &self.data[key.index];
+            let entry = unsafe {
+                self.data.get_unchecked(key.index)
+            };
 
             if entry.generation != key.generation || entry.is_empty() { return None; }
             else { return entry.get(); }
@@ -370,7 +374,9 @@ impl<T> Pool<T> for ObjectPool<T>
         if key.index >= self.data.capacity() { return None; }
         else
         {
-            let entry = &mut self.data[key.index];
+            let entry = unsafe {
+                self.data.get_unchecked_mut(key.index)
+            };
 
             if entry.generation != key.generation || entry.is_empty() { return None; }
             else { return entry.get_mut(); }
@@ -400,7 +406,9 @@ impl<T> Pool<T> for ObjectPool<T>
         if key.index >= self.data.capacity() { return None; }
         else
         {
-            let entry = &mut self.data[key.index];
+            let entry = unsafe {
+                self.data.get_unchecked_mut(key.index)
+            };
 
             if entry.generation != key.generation || entry.is_empty() { return None; }
 
@@ -435,7 +443,9 @@ impl<T> Pool<T> for ObjectPool<T>
         if key.index >= self.data.capacity() { return; }
         else
         {
-            let entry = &mut self.data[key.index];
+            let entry = unsafe {
+                self.data.get_unchecked_mut(key.index)
+            };
 
             if entry.generation != key.generation || entry.is_empty() { return; }
 
