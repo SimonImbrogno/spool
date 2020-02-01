@@ -7,6 +7,7 @@ pub trait Pool<T>
     fn get_mut(&mut self, key: &PoolKey) -> Option<&mut T>;
     fn take(&mut self, key: &PoolKey) -> Option<T>;
     fn delete(&mut self, key: &PoolKey);
+    fn clear(&mut self);
 }
 
 
@@ -338,12 +339,45 @@ impl<T> Pool<T> for ObjectPool<T>
                 self.data.get_unchecked_mut(key.index)
             };
 
+            // TODO: check performance of always ignoring entry.is_empty()
             if entry.generation != key.generation || entry.is_empty() { return; }
 
             entry.clear();
             self.count -= 1;
             self.free.push(key.index);
         }
+    }
+
+    /// Deletes all entries.
+    /// No entries will be returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use spool::{ ObjectPool, Pool };
+    ///
+    /// let mut pool = ObjectPool::new(10);
+    ///
+    /// let key1 = pool.insert("Delete me!");
+    /// let key2 = pool.insert("Delete me too!");
+    /// let key3 = pool.insert("Delete me too!");
+    ///
+    /// pool.clear();
+    ///
+    /// assert!(pool.get(&key1).is_none());
+    /// assert!(pool.get(&key2).is_none());
+    /// assert!(pool.get(&key2).is_none());
+    /// ```
+    fn clear(&mut self)
+    {
+        // TODO: check performance of checking for entry.is_empty()
+        for (i, entry) in self.data.iter_mut().enumerate()
+        {
+            entry.clear();
+            self.free.push(i);
+        }
+
+        self.count = 0;
     }
 }
 
@@ -764,6 +798,32 @@ mod tests
                 assert_eq!(pool.data[key.index].generation, key.generation, "Expected generation to remain unchanged.");
                 assert_eq!(pool.count, old_count, "Expected count to be unchanged.");
                 assert_eq!(pool.free.len(), old_free_len, "Expected free list length to be unchanged.");
+            }
+        }
+
+        mod clear
+        {
+            use super::super::{
+                Pool,
+                PoolKey,
+                ObjectPool,
+            };
+
+            #[test]
+            fn replaces_all_items_with_none_and_pushes_index_to_free()
+            {
+                let mut pool: ObjectPool<i32> = ObjectPool::new(10);
+                for _ in 0..10 { pool.insert(100); }
+
+                pool.clear();
+
+                for i in 0..10
+                {
+                    assert!(pool.data[i].data.is_none(), "Expected data at index {} to be None.", i);
+                    assert_eq!(pool.data[i].generation, 1, "Expected generation at index {} unchanged.", i);
+                }
+                assert_eq!(pool.count, 0, "Expected count to be 0.");
+                assert_eq!(pool.free.len(), pool.capacity(), "Expected free list length to be capacity of pool.");
             }
         }
     }
