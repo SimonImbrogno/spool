@@ -19,18 +19,18 @@ pub struct PoolKey
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
-struct PoolItem<T>
+struct PoolEntry<T>
 {
     generation: usize,
     data: Option<T>,
 }
 
 
-impl<T> PoolItem<T>
+impl<T> PoolEntry<T>
 {
     fn new() -> Self
     {
-        PoolItem {
+        Self {
             generation: 0,
             data: None,
         }
@@ -118,7 +118,20 @@ pub struct ObjectPool<T>
     count: usize,
     next: usize,
     free: Vec<usize>,
-    data: Vec<PoolItem<T>>,
+    data: Vec<PoolEntry<T>>,
+}
+
+impl<T> ObjectPool<T>
+{
+    pub fn iter(&self) -> impl Iterator<Item = &'_ T>
+    {
+        self.data.iter().filter_map(|e| e.get())
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &'_ mut T>
+    {
+        self.data.iter_mut().filter_map(|e| e.get_mut())
+    }
 }
 
 impl<T> Pool<T> for ObjectPool<T>
@@ -141,7 +154,7 @@ impl<T> Pool<T> for ObjectPool<T>
             free: Vec::new(),
             data: {
                 let mut data = Vec::with_capacity(capacity);
-                data.resize_with(capacity, PoolItem::new);
+                data.resize_with(capacity, PoolEntry::new);
                 data
             }
         }
@@ -182,9 +195,9 @@ impl<T> Pool<T> for ObjectPool<T>
     fn insert(&mut self, value: T) -> PoolKey
     {
         let index =
-            if self.free.len() > 0
+            if let Some(index) = self.free.pop()
             {
-                self.free.pop().unwrap()
+                index
             }
             else if self.next < self.data.capacity()
             {
@@ -201,6 +214,7 @@ impl<T> Pool<T> for ObjectPool<T>
         let generation = unsafe {
             self.data.get_unchecked_mut(index).set(value)
         };
+
         self.count += 1;
 
         return PoolKey {
@@ -233,12 +247,8 @@ impl<T> Pool<T> for ObjectPool<T>
         if key.index >= self.data.capacity() { return None; }
         else
         {
-            let entry = unsafe {
-                self.data.get_unchecked(key.index)
-            };
-
-            if entry.generation != key.generation || entry.is_empty() { return None; }
-            else { return entry.get(); }
+            let entry = unsafe { self.data.get_unchecked(key.index) };
+            if entry.generation != key.generation { None } else { entry.get() }
         }
     }
 
@@ -266,12 +276,8 @@ impl<T> Pool<T> for ObjectPool<T>
         if key.index >= self.data.capacity() { return None; }
         else
         {
-            let entry = unsafe {
-                self.data.get_unchecked_mut(key.index)
-            };
-
-            if entry.generation != key.generation || entry.is_empty() { return None; }
-            else { return entry.get_mut(); }
+            let entry = unsafe { self.data.get_unchecked_mut(key.index) };
+            if entry.generation != key.generation { None } else { entry.get_mut() }
         }
     }
 
@@ -298,15 +304,13 @@ impl<T> Pool<T> for ObjectPool<T>
         if key.index >= self.data.capacity() { return None; }
         else
         {
-            let entry = unsafe {
-                self.data.get_unchecked_mut(key.index)
-            };
-
+            let entry = unsafe { self.data.get_unchecked_mut(key.index) };
             if entry.generation != key.generation || entry.is_empty() { return None; }
 
             self.count -= 1;
             self.free.push(key.index);
-            return entry.take();
+
+            entry.take()
         }
     }
 
@@ -335,11 +339,7 @@ impl<T> Pool<T> for ObjectPool<T>
         if key.index >= self.data.capacity() { return; }
         else
         {
-            let entry = unsafe {
-                self.data.get_unchecked_mut(key.index)
-            };
-
-            // TODO: check performance of always ignoring entry.is_empty()
+            let entry = unsafe { self.data.get_unchecked_mut(key.index) };
             if entry.generation != key.generation || entry.is_empty() { return; }
 
             entry.clear();
@@ -370,13 +370,10 @@ impl<T> Pool<T> for ObjectPool<T>
     /// ```
     fn clear(&mut self)
     {
-        // TODO: check performance of checking for entry.is_empty()
-        for (i, entry) in self.data.iter_mut().enumerate()
-        {
-            entry.clear();
-            self.free.push(i);
-        }
+        for entry in self.data.iter_mut() { entry.clear(); }
 
+        self.free.clear();
+        self.next = 0;
         self.count = 0;
     }
 }
@@ -805,12 +802,11 @@ mod tests
         {
             use super::super::{
                 Pool,
-                PoolKey,
                 ObjectPool,
             };
 
             #[test]
-            fn replaces_all_items_with_none_and_pushes_index_to_free()
+            fn replaces_all_items_with_none_and_clears_free_queue_and_resets_next()
             {
                 let mut pool: ObjectPool<i32> = ObjectPool::new(10);
                 for _ in 0..10 { pool.insert(100); }
@@ -823,7 +819,114 @@ mod tests
                     assert_eq!(pool.data[i].generation, 1, "Expected generation at index {} unchanged.", i);
                 }
                 assert_eq!(pool.count, 0, "Expected count to be 0.");
-                assert_eq!(pool.free.len(), pool.capacity(), "Expected free list length to be capacity of pool.");
+                assert_eq!(pool.next, 0, "Expected next to be 0.");
+                assert_eq!(pool.free.len(), 0, "Expected free list length to be empty.");
+            }
+        }
+
+        mod iter
+        {
+            use super::super::{
+                Pool,
+                ObjectPool,
+            };
+
+            #[test]
+            fn returns_an_empty_iterator_from_empty_pool()
+            {
+                let pool: ObjectPool<i32> = ObjectPool::new(10);
+                let data: Vec<_> = pool.iter().collect();
+                assert!(data.len() == 0, "Expected iterator to be empty.");
+            }
+
+            #[test]
+            fn returns_an_iterator_to_all_contained_elements()
+            {
+                let mut pool: ObjectPool<i32> = ObjectPool::new(10);
+                for i in 0..10 { pool.insert(i); }
+
+                let data: Vec<_> = pool.iter().collect();
+                assert!(data.len() == 10, "Expected iterator to contain 10 elements.");
+                assert_eq!(data, [&0, &1, &2, &3, &4, &5, &6, &7, &8, &9]);
+            }
+
+            #[test]
+            fn returns_an_iterator_correctly_skipping_none_elements()
+            {
+                let mut pool: ObjectPool<i32> = ObjectPool::new(10);
+
+                let _     = pool.insert(0);
+                let _     = pool.insert(1);
+                let item2 = pool.insert(2);
+                let _     = pool.insert(3);
+                let _     = pool.insert(4);
+                let _     = pool.insert(5);
+                let item6 = pool.insert(6);
+                let item7 = pool.insert(7);
+                let _     = pool.insert(8);
+                let item9 = pool.insert(9);
+
+                pool.delete(&item2);
+                pool.delete(&item6);
+                pool.delete(&item7);
+                pool.delete(&item9);
+
+                let data: Vec<_> = pool.iter().collect();
+                assert!(data.len() == 6, "Expected iterator to contain 6 elements.");
+                assert_eq!(data, [&0, &1, &3, &4, &5, &8]);
+            }
+        }
+
+        mod iter_mut
+        {
+            use super::super::{
+                Pool,
+                ObjectPool,
+            };
+
+            #[test]
+            fn returns_an_empty_iterator_from_empty_pool()
+            {
+                let mut pool: ObjectPool<i32> = ObjectPool::new(10);
+                let data: Vec<_> = pool.iter_mut().collect();
+                assert!(data.len() == 0, "Expected iterator to be empty.");
+            }
+
+            #[test]
+            fn returns_an_iterator_to_all_contained_elements()
+            {
+                let mut pool: ObjectPool<i32> = ObjectPool::new(10);
+                for i in 0..10 { pool.insert(i); }
+
+                let data: Vec<_> = pool.iter_mut().collect();
+                assert!(data.len() == 10, "Expected iterator to contain 10 elements.");
+                assert_eq!(data, [&0, &1, &2, &3, &4, &5, &6, &7, &8, &9]);
+            }
+
+            #[test]
+            fn returns_an_iterator_correctly_skipping_none_elements()
+            {
+                let mut pool: ObjectPool<i32> = ObjectPool::new(10);
+
+                let _     = pool.insert(0);
+                let _     = pool.insert(1);
+                let item2 = pool.insert(2);
+                let _     = pool.insert(3);
+                let _     = pool.insert(4);
+                let _     = pool.insert(5);
+                let item6 = pool.insert(6);
+                let item7 = pool.insert(7);
+                let _     = pool.insert(8);
+                let item9 = pool.insert(9);
+
+                pool.delete(&item2);
+                pool.delete(&item6);
+                pool.delete(&item7);
+                pool.delete(&item9);
+
+                let data: Vec<_> = pool.iter_mut().collect();
+                assert!(data.len() == 6, "Expected iterator to contain 6 elements.");
+                assert_eq!(data, [&0, &1, &3, &4, &5, &8]);
             }
         }
     }
@@ -832,12 +935,12 @@ mod tests
     {
         mod default
         {
-            use super::super::PoolItem;
+            use super::super::PoolEntry;
 
             #[test]
             fn default_makes_sense()
             {
-                let val: PoolItem<i32> = Default::default();
+                let val: PoolEntry<i32> = Default::default();
 
                 assert_eq!(val.generation, 0);
                 assert!(val.data.is_none());
@@ -846,12 +949,12 @@ mod tests
 
         mod set
         {
-            use super::super::PoolItem;
+            use super::super::PoolEntry;
 
             #[test]
             fn increments_generation()
             {
-                let mut val: PoolItem<i32> = Default::default();
+                let mut val: PoolEntry<i32> = Default::default();
                 let test_gen = val.generation + 1;
 
                 val.set(100);
@@ -866,19 +969,19 @@ mod tests
 
         mod get
         {
-            use super::super::PoolItem;
+            use super::super::PoolEntry;
 
             #[test]
             fn returns_none_if_empty()
             {
-                let val: PoolItem<i32> = Default::default();
+                let val: PoolEntry<i32> = Default::default();
                 assert!(val.get().is_none());
             }
 
             #[test]
             fn returns_some_if_not_empty()
             {
-                let mut val: PoolItem<i32> = Default::default();
+                let mut val: PoolEntry<i32> = Default::default();
                 val.set(100);
                 assert!(val.get().is_some());
             }
@@ -886,19 +989,19 @@ mod tests
 
         mod get_mut
         {
-            use super::super::PoolItem;
+            use super::super::PoolEntry;
 
             #[test]
             fn returns_none_if_empty()
             {
-                let mut val: PoolItem<i32> = Default::default();
+                let mut val: PoolEntry<i32> = Default::default();
                 assert!(val.get_mut().is_none());
             }
 
             #[test]
             fn returns_some_if_not_empty()
             {
-                let mut val: PoolItem<i32> = Default::default();
+                let mut val: PoolEntry<i32> = Default::default();
                 val.set(100);
                 assert!(val.get_mut().is_some());
             }
@@ -906,12 +1009,12 @@ mod tests
 
         mod clear
         {
-            use super::super::PoolItem;
+            use super::super::PoolEntry;
 
             #[test]
             fn sets_contents_to_none_without_advancing_generation()
             {
-                let mut val: PoolItem<i32> = Default::default();
+                let mut val: PoolEntry<i32> = Default::default();
                 val.set(100);
 
                 let generation = val.generation;
